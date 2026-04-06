@@ -432,7 +432,12 @@ def main():
         pub_hex = input("Enter compressed pubkey (hex): ").strip()
         bits = int(input("Enter bit length: ") or 15)
         start_input = input(f"Enter k_start (hex) [Press Enter for auto 2^({bits-1})]: ").strip()
-        k_start = int(start_input, 16) if start_input else (1 << (bits-1))
+        start_input = input(f"Enter k_start (hex) [Press Enter for auto 2^({bits-1})]: ").strip()
+        if start_input:
+            k_start = int(start_input, 16)
+        else:
+            k_start = calculate_keyspace_start(bits)
+            print(f"Auto-calculated k_start: {hex(k_start)}")
         shots = int(input("Enter number of shots: ") or 32768)
 
     print(f"\nRunning for {bits}-bit key | Shots: {shots}")
