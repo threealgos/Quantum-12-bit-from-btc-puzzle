@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # ===========================================================================================
-# 🔐 Quantum ECDLP Solver with IPE, XY4, SABRE, ASAP, PRESETS, and Custom Mode (IBM HARDWARE ONLY) 🔐
+# 🔐 Quantum ECDLP Solver with IPE, XY4, SABRE (IBM HARDWARE ONLY) 🔐
 # ===========================================================================================
 # Features:
 # - Runs ONLY on real IBM Quantum hardware (NO SIMULATOR)
-# - XY4, SABRE, ASAP transpilation methods for noise resilience and optimization
+# - XY4 and SABRE transpilation (as in reference code)
 # - PRESETS for common bit lengths and targets
 # - Custom mode for arbitrary parameters
 # - Interactive input for target pubkey, bits, shots, and hardware selection
@@ -25,8 +25,6 @@ from qiskit.synthesis import synth_qft_full
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2, Options
 from qiskit_ibm_runtime.options import SamplerOptions
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
-from qiskit.transpiler import PassManager
-from qiskit.transpiler.passes import SabreSwap, DynamicalDecoupling, CXCancellation, ASAPSchedule
 from ecdsa.ellipticcurve import Point, CurveFp
 from ecdsa import SigningKey, SECP256k1
 
@@ -49,16 +47,12 @@ PRESETS = {
 # Defaults (can be overridden by user input)
 TARGET_PUBKEY = bytes.fromhex("03ccb5e3ad4abc7900ebfbd81621e31ec2b17b346090e741921a91bf9cadf934c5") # PublicKey Correspond for 16-bit Decimal=32803 / HEX=0x00008023
 TARGET_ADDRESS = "17wsUeKMK1JgjGzdfYBjefDdyakNCK9xVx" # Corresponding to 16-bit Decimal=32803 / HEX=0x00008023
-
 BITS = 16
 SHOTS = 32768
-
 FULL_RANGE_START = 0x8000
 FULL_RANGE_END = 0xffff
-
 USE_XY4 = False
 USE_SABRE = False
-USE_ASAP = False
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -144,52 +138,34 @@ def build_ipe_circuit(bits):
 
     return qc
 
-# ====================== TRANSPILATION METHODS ======================
-def transpile_with_xy4(qc, backend):
-    pm = PassManager([
-        DynamicalDecoupling(sequence_type="XY4"),
-        CXCancellation(),
-    ])
-    return pm.run(qc)
-
-def transpile_with_sabre(qc, backend):
-    pm = PassManager([
-        SabreSwap(coupling_map=backend.coupling_map),
-        CXCancellation(),
-    ])
-    return pm.run(qc)
-
-def transpile_with_asap(qc, backend):
-    pm = PassManager([
-        ASAPSchedule(backend.target),
-        CXCancellation(),
-    ])
-    return pm.run(qc)
-
 # ====================== EXECUTION (IBM HARDWARE ONLY) ======================
-def run_circuit(qc, shots, api_token, crn=None, use_xy4=False, use_sabre=False, use_asap=False):
+def run_circuit(qc, shots, api_token, crn=None, use_xy4=False, use_sabre=False):
     try:
         QiskitRuntimeService.save_account(channel="ibm_quantum_platform", token=api_token, overwrite=True)
         service = QiskitRuntimeService(instance=crn) if crn else QiskitRuntimeService()
         backend = service.least_busy(operational=True, simulator=False, min_num_qubits=156)
         logger.info(f"Using IBM backend: {backend.name}")
 
-        if use_xy4:
-            qc = transpile_with_xy4(qc, backend)
-            logger.info("Applied XY4 dynamical decoupling.")
-        if use_sabre:
-            qc = transpile_with_sabre(qc, backend)
-            logger.info("Applied SABRE swap optimization.")
-        if use_asap:
-            qc = transpile_with_asap(qc, backend)
-            logger.info("Applied ASAP scheduling.")
+        # SamplerOptions (XY4 enabled via options)
+        options = SamplerOptions()
+        options.dynamical_decoupling.enable = use_xy4
+        options.dynamical_decoupling.sequence_type = "XY4"
 
-        pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
-        isa_qc = pm.run(qc)
-        sampler = SamplerV2(mode=backend)
-        options = Options()
-        options.resilience_level = 1
-        job = sampler.run([isa_qc], shots=shots)
+        # Transpile with SABRE routing
+        pm = generate_preset_pass_manager(
+            optimization_level=3,
+            backend=backend,
+            routing_method="sabre" if use_sabre else None
+        )
+        transpiled = pm.run(qc)
+
+        logger.info(f"Transpiled circuit depth: {transpiled.depth()}")
+        logger.info(f"Transpiled circuit size : {transpiled.size()}")
+
+        sampler = SamplerV2(mode=backend, options=options)
+        job = sampler.run([transpiled], shots=shots)
+        logger.info(f"Job ID: {job.job_id()}")
+        logger.info("Waiting for results...")
         result = job.result()
         return result[0].data.c.get_counts()
     except Exception as e:
@@ -223,10 +199,10 @@ def post_process(counts, bits, order, start, target_pub):
 
 # ====================== MAIN ======================
 def main():
-    global delta, BITS, SHOTS, TARGET_PUBKEY, TARGET_ADDRESS, USE_XY4, USE_SABRE, USE_ASAP
+    global delta, BITS, SHOTS, TARGET_PUBKEY, TARGET_ADDRESS, USE_XY4, USE_SABRE
 
     print("="*100)
-    print("🔐 Quantum ECDLP Solver with IPE, XY4, SABRE, ASAP, PRESETS, and Custom Mode (IBM HARDWARE ONLY) 🔐")
+    print("🔐 Quantum ECDLP Solver with IPE, XY4, SABRE (IBM HARDWARE ONLY) 🔐")
     print("="*100)
 
     # Preset or Custom
@@ -253,23 +229,22 @@ def main():
     print("\nEnable Transpilation Methods:")
     USE_XY4 = input("Enable XY4 dynamical decoupling? [y/N] → ").strip().lower() == "y"
     USE_SABRE = input("Enable SABRE swap optimization? [y/N] → ").strip().lower() == "y"
-    USE_ASAP = input("Enable ASAP scheduling? [y/N] → ").strip().lower() == "y"
 
     api_token = input("IBM Quantum API token (REQUIRED): ").strip()
     crn = input("IBM Cloud CRN (Enter to skip): ").strip() or None
 
     print("="*100)
     print(f"Running for {BITS}-bit key | Shots: {SHOTS}")
-    print(f"Transpilation: XY4={USE_XY4}, SABRE={USE_SABRE}, ASAP={USE_ASAP}")
+    print(f"Transpilation: XY4={USE_XY4}, SABRE={USE_SABRE}")
     print("="*100)
 
     print("Deriving public point Q from TARGET_PUBKEY...")
     Q_real = decompress_pubkey(TARGET_PUBKEY.hex())
     print("✅ Public point Q derived (real secp256k1).")
-    delta = Q_real  # We use the full point in the oracle (toy reduction inside circuit)
+    delta = Q_real
 
     qc = build_ipe_circuit(BITS)
-    counts = run_circuit(qc, SHOTS, api_token, crn, USE_XY4, USE_SABRE, USE_ASAP)
+    counts = run_circuit(qc, SHOTS, api_token, crn, USE_XY4, USE_SABRE)
 
     print(f"\nPost-processing {len(counts)} measurement outcomes...")
     found_key = post_process(counts, BITS, N, FULL_RANGE_START, Q_real)
